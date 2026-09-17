@@ -267,21 +267,19 @@ def toolGetItemSource(String type, String idParam, args) {
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
-    // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
-    // Hubitat embeds via <style>/<script>: the tags strip above but the
-    // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
-    // Local Variables `lvTable` page). Only blocks containing ; or : inside the
-    // braces are removed, so prose like "{x}" is preserved.
-    if (s.contains("<")) {
-        s = s.replaceAll(/<[^>]+>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
-    }
-    // Decode the common HTML entities Hubitat escapes user-typed names with: a
-    // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
-    // Decode &amp; LAST so a single-encoded "&lt;" resolves correctly.
-    if (s.contains("&")) {
-        s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
-             .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
-             .replace("&amp;", "&")
+    // A comparison '< 20' is text, not a tag. Match actual tag syntax, including
+    // quoted attributes, without consuming the following comparison or markup.
+    // Remove script/style CONTENT before tags; never erase arbitrary {prose}.
+    s = s.replaceAll(/(?is)<(script|style)\b[^>]*>.*?(?:<\/\1\s*>|$)/, "")
+         .replaceAll(/(?s)<!--.*?(?:-->|$)/, "")
+         .replaceAll(/(?i)<br\s*\/?>/, "\n")
+         .replaceAll(/(?i)<\/?[a-z][a-z0-9:-]*(?:\s+[a-z_:][a-z0-9_.:-]*(?:\s*=\s*(?:"[^"<]*"|'[^'<]*'|[^\s<>`='"]+))?)*\s*\/?>/, "")
+    // Decode once, AFTER removing markup. Encoded tags are literal text.
+    def entities = [lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", amp: "&",
+                    "#60": "<", "#62": ">", "#34": '"', "#39": "'", "#160": " ", "#38": "&",
+                    "#x3c": "<", "#x3e": ">", "#x22": '"', "#x27": "'", "#xa0": " ", "#x26": "&"]
+    s = s.replaceAll(/&([a-z]+|#[0-9]+|#x[0-9a-fA-F]+);/) { whole, key ->
+        entities.get(key.toLowerCase()) ?: whole
     }
     return s.trim()
 }
@@ -326,7 +324,7 @@ private List _extractEmbeddedActions(String html) {
         if (tm.find()) title = tm.group(1)
         def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
         if (sm.find()) state = sm.group(1)
-        def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
+        def inner = stripAppConfigHtml(innerRaw)
         divs << [title: title, stateAttribute: state, description: inner ?: null]
     }
     if (!buttonNames || !divs) return []
@@ -343,6 +341,102 @@ private List _extractEmbeddedActions(String html) {
     return actions
 }
 
+private Map _rmInventoryText(value, Set hiddenNames) {
+    // A bounded source FIELD, never a newline-derived action boundary.
+    if (!(value instanceof String) || value.size() > 100000) return [status: "unavailable"]
+    def text = stripAppConfigHtml(value)
+    if (hiddenNames.any { text.toLowerCase().contains(it.toString().toLowerCase()) }) return [status: "withheld"]
+    return [status: "available", text: text]
+}
+
+private Map _rmInventoryStructure(Integer appId) {
+    // Only the main page and existing compiled/status readers; no editor subpages.
+    // Do not return/log raw response text, exceptions, arbitrary settings or state.
+    try {
+        def raw = hubInternalGet("/installedapp/configure/json/${appId}", null, 30)
+        def page = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(page instanceof Map) || !(page.app instanceof Map) || page.app.id?.toString() != appId.toString() ||
+            !(page.configPage?.sections instanceof List) || !(page.settings instanceof Map)) {
+            return [success: false, error: "ruleStructure source contract unavailable"]
+        }
+        def compiled = _ruleCompiledState(appId, true)
+        if (compiled?.readError) return [success: false, error: "ruleStructure compiled read failed"]
+        def result = [success: true, contract: "hubitat.rm.structure", contractVersion: 1,
+                      appId: appId, ruleFormat: compiled?.ruleFormat ?: "unknown"]
+        if (compiled?.ruleFormat != "rm") return result
+        def locals = _rmReadLocalVarsMap(appId, true)
+        if (locals.ok != true) return [success: false, error: "ruleStructure local scope read failed"]
+        def safeTypes = ["boolean", "number", "integer", "decimal", "time", "date", "datetime"]
+        def hidden = [] as Set
+        def privateName = { name -> name.toString().replaceAll(/[^a-zA-Z0-9]/, "").toLowerCase() =~ /password|passwd|credential|secret|token|pincode|lockcode/ }
+        def safeLocals = []
+        locals.vars.each { name, variable ->
+            def type = variable instanceof Map ? variable.type?.toString()?.toLowerCase() : null
+            if (!(type in safeTypes) || privateName(name).find()) {
+                hidden.add(name.toString())
+            } else {
+                safeLocals << [name: name.toString(), type: type]
+            }
+        }
+        // Suppress String/unknown globals in displayed fields too. Locals shadow globals.
+        def globals = getAllGlobalVars()
+        if (!(globals instanceof Map)) return [success: false, error: "ruleStructure global scope read failed"]
+        globals.each { name, variable ->
+            if (privateName(name).find() || (!locals.vars.containsKey(name) && !(variable?.type?.toString()?.toLowerCase() in safeTypes))) hidden.add(name.toString())
+        }
+        result.localVariables = safeLocals.sort { it.name }
+        def bodies = page.configPage.sections.collectMany { section ->
+            (section instanceof Map && section.body instanceof List) ? section.body : []
+        }
+        def named = { target ->
+            def matches = bodies.findAll { it instanceof Map && it.element == "href" && it.page == target }
+            matches.size() == 1 ? _rmInventoryText(matches[0].description, hidden) : [status: "unavailable"]
+        }
+        result.requiredExpression = compiled.requirementConfigured == false ? [status: "not_configured"] :
+            compiled.requirementConfigured == true ? named("STPage") : [status: "unavailable"]
+        result.triggers = named("selectTriggers")
+        def order = _rmOrderedActionIndices(appId, compiled)
+        if (order == null || order.size() > 500 || order.any { it < 1 } || order.toSet().size() != order.size()) {
+            result.actions = [status: "unavailable", reason: "compiled_order_unavailable"]
+            return result
+        }
+        // These source subtypes contain known bounded display grammars. Other payloads
+        // remain opaque. The consumer, not this projection, interprets their semantics.
+        def boundedTypes = ["getElse", "getElseIf", "getEndIf", "getIfThen", "getOnOffSwitch", "getPushButton",
+            "getShadePosition", "getCancelDelay", "getCapture", "getRestore", "getSetPrivateBoolean",
+            "getWaitEvents", "getWaitRule", "getRepeat", "getWhile", "getStopRepeat",
+            "getDelay", "getLock", "getUnlock", "getLockUnlock", "getSetVariable"]
+        def categories = [getMsg: "notification", getHTTPGet: "http", getHTTPPost: "http",
+            getDefinedAction: "custom", getComment: "comment", getLogMsg: "private_text",
+            getWriteLocalFile: "private_text", getAppendLocalFile: "private_text", getDeleteLocalFile: "private_text"]
+        def settingRows = [:]
+        order.each { idx ->
+            ["actType", "actSubType"].each { prefix ->
+                def key = "${prefix}.${idx}".toString()
+                def value = page.settings[key]
+                if (value instanceof String && value ==~ /[A-Za-z][A-Za-z0-9]{0,63}/) settingRows.put(key, [value: value])
+            }
+        }
+        def rows = []
+        _rmStructuralSequenceFromSettings(settingRows, [] as Set, order).each { entry ->
+            def row = [index: entry.idx, actType: entry.actType, actSubType: entry.actSubType]
+            if (entry.actSubType in boundedTypes) {
+                def descriptions = compiled.actionDescriptions
+                def description = descriptions instanceof Map ? descriptions.get(entry.idx.toString()) : null
+                row.putAll(_rmInventoryText(description, hidden))
+            } else {
+                row.status = "withheld"
+                row.category = categories.get(entry.actSubType) ?: "unsupported"
+            }
+            rows << row
+        }
+        result.actions = [status: "available", order: order, rows: rows]
+        return result
+    } catch (Exception ignored) {
+        return [success: false, error: "ruleStructure read failed"]
+    }
+}
+
 def toolGetAppConfig(args) {
 
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -351,6 +445,13 @@ def toolGetAppConfig(args) {
     def appIdStr = args.appId.toString().trim()
     if (!appIdStr.isInteger()) {
         throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
+    }
+
+    if (args?.projection != null) {
+        if (args.projection != "ruleStructure" || args.pageName || args.summary == true || args.includeSettings == true) {
+            throw new IllegalArgumentException("ruleStructure projection cannot be combined with pageName, summary or includeSettings")
+        }
+        return _rmInventoryStructure(appIdStr as Integer)
     }
 
     def pageName = args?.pageName?.toString()?.trim()
@@ -2930,6 +3031,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
+                    projection: [type: "string", enum: ["ruleStructure"], description: "Narrow read-only RM source contract v1: named components, compiled action order, bounded descriptions and non-string local identities. No arbitrary settings or local values. Incompatible with pageName/summary/includeSettings."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
                 ],

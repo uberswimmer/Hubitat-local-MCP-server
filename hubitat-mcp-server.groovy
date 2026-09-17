@@ -8376,7 +8376,7 @@ private Map _rmFetchStatusJson(Integer appId) {
  * case is a single GET; only fall through to the graph endpoint when the shape is
  * unrecognized. (Endpoint inventory: resources/hub2-source/README.md.)
  */
-private Map _ruleCompiledState(Integer appId) {
+private Map _ruleCompiledState(Integer appId, boolean definitionEvidence = false) {
     // readError captures a THROWN read (auth 401/403, hub-down 5xx, timeout) so the caller can
     // distinguish "this read failed" from "this is a clean non-rule shape". Without it, a
     // source='ruleBuilderJson' call (which has no HTML fallback) would mis-report a 403 / hub-down
@@ -8406,12 +8406,19 @@ private Map _ruleCompiledState(Integer appId) {
                 // actionList is RM's own ordered array of action indices — the only display-ordered
                 // source there is (appSettings key order is arbitrary). Carried through raw so
                 // callers reuse this fetch rather than opening a second path to the endpoint.
-                return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
+                def result = [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         paused: parsed.paused instanceof Boolean ? parsed.paused : null,
                         predicate: pred,
                         capabsfalse: (parsed.capabsfalse instanceof Map ? parsed.capabsfalse : null),
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         endpoint: "ruleBuilderJson"]
+                if (definitionEvidence) {
+                    result.requirementConfigured = parsed.hasPredicate instanceof Boolean ? parsed.hasPredicate : null
+                    // Individual compiled display strings, never split a rendered multi-action paragraph.
+                    // If firmware changes this shape, the consumer receives unavailable descriptions.
+                    result.actionDescriptions = parsed.actions instanceof Map ? parsed.actions : null
+                }
+                return result
             }
         }
     }
@@ -8584,8 +8591,8 @@ private List _rmCoerceActionIndices(List raw) {
  * The rule's action indices in display order, straight from the compiled
  * rule. Null when the compiled state is unreadable or carries no list.
  */
-private List _rmOrderedActionIndices(Integer appId) {
-    _rmCoerceActionIndices(_ruleCompiledState(appId)?.actionList)
+private List _rmOrderedActionIndices(Integer appId, Map compiled = null) {
+    _rmCoerceActionIndices((compiled != null ? compiled : _ruleCompiledState(appId))?.actionList)
 }
 
 /**
@@ -10030,6 +10037,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call hub_list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
+  - projection="ruleStructure" selects the read-only `hubitat.rm.structure` v1 contract: named required expression/triggers, compiled actionList order, individual compiled description fields and non-string local metadata. It rejects pageName/summary/includeSettings combinations; no arbitrary settings or local values are returned. Missing source fields are explicit gaps. See docs/rule-structure.md.
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
 - **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)

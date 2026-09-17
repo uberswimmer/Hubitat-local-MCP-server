@@ -10381,7 +10381,7 @@ def _createNativeAppShell(args) {
 // A non-List appState (a shape RM is not expected to emit) is treated as
 // "no locals" but logged as a shape mismatch so a silent zero-locals read of a
 // changed contract is visible rather than mistaken for a genuinely empty rule.
-private Map _rmReadLocalVarsMap(Integer appId) {
+private Map _rmReadLocalVarsMap(Integer appId, boolean requireScopeShape = false) {
     def status
     try {
         status = _rmFetchStatusJson(appId)
@@ -10389,6 +10389,7 @@ private Map _rmReadLocalVarsMap(Integer appId) {
         return [ok: false, vars: [:], error: "${e.class.simpleName}: ${e.message ?: e.toString()}"]
     }
     def appState = status?.appState
+    if (requireScopeShape && !(appState instanceof List)) return [ok: false, vars: [:], error: "local scope shape unavailable"]
     if (appState != null && !(appState instanceof List)) {
         // appState has always been a List-of-entries; a non-List shape would make the
         // .find below read zero locals silently. An EMPTY non-List (e.g. [:]) carries no
@@ -10403,7 +10404,10 @@ private Map _rmReadLocalVarsMap(Integer appId) {
         }
         return [ok: true, vars: [:]]
     }
-    def raw = (appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+    def matches = (appState ?: []).findAll { it?.name?.toString() == "allLocalVars" }
+    if (matches.size() > 1) return [ok: false, vars: [:], error: "duplicate local scope"]
+    def raw = matches ? matches[0].value : null
+    if (raw != null && !(raw instanceof Map)) return [ok: false, vars: [:], error: "allLocalVars shape unavailable"]
     return [ok: true, vars: (raw instanceof Map) ? raw : [:]]
 }
 

@@ -10956,6 +10956,29 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("installed_app_reads")
+    def test_get_app_config_rule_structure(self) -> None:
+        # Test-hub fixture only. Production inventory itself performs no writes.
+        app_id = self._create_native_rule("CfgStructure")
+        try:
+            result = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": str(app_id), "projection": "ruleStructure"},
+            })
+            assert result.get("success") is True, "ruleStructure read failed"
+            assert result.get("contract") == "hubitat.rm.structure"
+            assert result.get("contractVersion") == 1
+            assert str(result.get("appId")) == str(app_id)
+            assert result.get("ruleFormat") == "rm"
+            assert isinstance(result.get("localVariables"), list)
+            assert all(set(v) == {"name", "type"} for v in result["localVariables"])
+            assert not any(k in result for k in ("settings", "page", "appState"))
+            actions = result.get("actions", {})
+            assert actions.get("status") == "available", "compiled action order unavailable"
+            assert [r["index"] for r in actions["rows"]] == actions["order"]
+        finally:
+            self._delete_native(app_id)
+
+    @test("installed_app_reads")
     def test_list_app_events_structural(self) -> None:
         # Per-app events -- structural contract only. There is no cheap deterministic
         # way to make an app emit an event on demand (RM rules only write events when
