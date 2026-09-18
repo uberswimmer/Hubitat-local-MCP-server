@@ -10960,13 +10960,17 @@ class TestRunner:
         # Test-hub fixture only. Production inventory itself performs no writes.
         app_id = self._create_native_rule("CfgStructure")
         try:
+            for action in ({"capability": "delay", "seconds": 7},
+                           {"capability": "comment", "text": "INVENTORY_PRIVATE_SENTINEL"},
+                           {"capability": "delay", "seconds": 9}):
+                self._add_action_or_raise_504(app_id, action)
             result = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
                 "args": {"appId": str(app_id), "projection": "ruleStructure"},
             })
             assert result.get("success") is True, "ruleStructure read failed"
             assert result.get("contract") == "hubitat.rm.structure"
-            assert result.get("contractVersion") == 1
+            assert result.get("contractVersion") == 2
             assert str(result.get("appId")) == str(app_id)
             assert result.get("ruleFormat") == "rm"
             assert isinstance(result.get("localVariables"), list)
@@ -10975,6 +10979,17 @@ class TestRunner:
             actions = result.get("actions", {})
             assert actions.get("status") == "available", "compiled action order unavailable"
             assert [r["index"] for r in actions["rows"]] == actions["order"]
+            rows = actions["rows"]
+            assert [r["actSubType"] for r in rows] == ["getDelay", "getComment", "getDelay"]
+            for row, seconds in ((rows[0], 7), (rows[2], 9)):
+                assert row["status"] == "available", "indexed delay settings unavailable"
+                evidence = row["fields"]["delaySecond"]
+                assert evidence["status"] == "available", "duration field unavailable"
+                assert float(evidence["value"]) == seconds, "configured duration was not preserved"
+                assert "text" not in row
+            assert rows[1]["status"] == "withheld" and rows[1]["category"] == "comment"
+            assert "fields" not in rows[1] and "text" not in rows[1]
+            assert "INVENTORY_PRIVATE_SENTINEL" not in json.dumps(result)
         finally:
             self._delete_native(app_id)
 

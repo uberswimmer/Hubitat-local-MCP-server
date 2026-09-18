@@ -349,6 +349,49 @@ private Map _rmInventoryText(value, Set hiddenNames) {
     return [status: "available", text: text]
 }
 
+private Map _rmInventoryActionFields(Map settings, Integer index, String subtype, Set variableNames) {
+    // Select source fields only. Defaults, units, polarity, scope and modifiers
+    // are interpreted by the inventory's semantic parser, never here.
+    def definitions = [
+        getOnOffSwitch: [onOffSwitch: "devices", onOff: "boolean", optSwitch: "boolean"],
+        getPushButton: [pushButton: "devices", pushButNo: "number", pushButOp: ["push", "hold", "doubleTap", "release"], varButNo: "boolean"],
+        getLULock: [lockLockUnlock: "devices", lockRL: "boolean"],
+        getShadePosition: [shadePosition: "devices", shadeLevel: "number"],
+        getCapture: [capture: "devices"], getRestore: [:], getCancelDelay: [:],
+        getDelay: [delayHour: "number", delayMinute: "number", delaySecond: "number", uVar: "boolean", xVar: "variable"],
+        getRepeat: [repeatHour: "number", repeatMinute: "number", repeatSecond: "number", repeatN: "number", stopRepeat: "boolean", uVar: "boolean", uVar2: "boolean"],
+        getWhile: [repeatHour: "number", repeatMinute: "number", repeatSecond: "number", repeatN: "number", stopRepeat: "boolean", uVar: "boolean", uVar2: "boolean"],
+        getIfThen: [:], getElseIf: [:], getElse: [:], getEndIf: [:], getEndRepeat: [:], getStopRepeat: [:]
+    ]
+    if (!definitions.containsKey(subtype)) return [status: "unavailable"]
+    def fields = [:]
+    def selected = [:] + definitions.get(subtype) + [
+        delayAct: ["none", "hrs:min:sec", "variable"], delayHor: "number", delayMin: "number", delaySec: "number",
+        randomAct: "boolean", cancelAct: "boolean", xVarD: "variable"
+    ]
+    selected.each { field, domain ->
+        def key = "${field}.${index}".toString()
+        if (!settings.containsKey(key)) {
+            fields.put(field, [status: "absent"])
+            return
+        }
+        def value = settings.get(key)
+        boolean valid = value == null || value == ""
+        if (!valid) {
+            if (domain instanceof List) valid = value instanceof String && domain.contains(value)
+            else if (domain == "boolean") valid = value instanceof Boolean || value in ["true", "false"]
+            else if (domain == "number") valid = (value instanceof Number || value instanceof String) &&
+                value.toString() ==~ /-?(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,6})?/
+            else if (domain == "devices") valid = value instanceof List && value.size() <= 128 && value.every {
+                (it instanceof Number || it instanceof String) && it.toString() ==~ /[1-9][0-9]{0,9}/
+            }
+            else if (domain == "variable") valid = value instanceof String && variableNames.contains(value)
+        }
+        fields.put(field, valid ? [status: "available", value: value] : [status: "withheld"])
+    }
+    return [status: "available", fields: fields]
+}
+
 private Map _rmInventoryStructure(Integer appId) {
     // Only the main page and existing compiled/status readers; no editor subpages.
     // Do not return/log raw response text, exceptions, arbitrary settings or state.
@@ -361,7 +404,7 @@ private Map _rmInventoryStructure(Integer appId) {
         }
         def compiled = _ruleCompiledState(appId, true)
         if (compiled?.readError) return [success: false, error: "ruleStructure compiled read failed"]
-        def result = [success: true, contract: "hubitat.rm.structure", contractVersion: 1,
+        def result = [success: true, contract: "hubitat.rm.structure", contractVersion: 2,
                       appId: appId, ruleFormat: compiled?.ruleFormat ?: "unknown"]
         if (compiled?.ruleFormat != "rm") return result
         def locals = _rmReadLocalVarsMap(appId, true)
@@ -384,6 +427,9 @@ private Map _rmInventoryStructure(Integer appId) {
         globals.each { name, variable ->
             if (privateName(name).find() || (!locals.vars.containsKey(name) && !(variable?.type?.toString()?.toLowerCase() in safeTypes))) hidden.add(name.toString())
         }
+        def variableNames = (safeLocals.collect { it.name } + globals.keySet().findAll {
+            !locals.vars.containsKey(it) && !hidden.contains(it.toString())
+        }.collect { it.toString() }) as Set
         result.localVariables = safeLocals.sort { it.name }
         def bodies = page.configPage.sections.collectMany { section ->
             (section instanceof Map && section.body instanceof List) ? section.body : []
@@ -400,12 +446,6 @@ private Map _rmInventoryStructure(Integer appId) {
             result.actions = [status: "unavailable", reason: "compiled_order_unavailable"]
             return result
         }
-        // These source subtypes contain known bounded display grammars. Other payloads
-        // remain opaque. The consumer, not this projection, interprets their semantics.
-        def boundedTypes = ["getElse", "getElseIf", "getEndIf", "getIfThen", "getOnOffSwitch", "getPushButton",
-            "getShadePosition", "getCancelDelay", "getCapture", "getRestore", "getSetPrivateBoolean",
-            "getWaitEvents", "getWaitRule", "getRepeat", "getWhile", "getStopRepeat",
-            "getDelay", "getLock", "getUnlock", "getLockUnlock", "getSetVariable"]
         def categories = [getMsg: "notification", getHTTPGet: "http", getHTTPPost: "http",
             getDefinedAction: "custom", getComment: "comment", getLogMsg: "private_text",
             getWriteLocalFile: "private_text", getAppendLocalFile: "private_text", getDeleteLocalFile: "private_text"]
@@ -420,13 +460,11 @@ private Map _rmInventoryStructure(Integer appId) {
         def rows = []
         _rmStructuralSequenceFromSettings(settingRows, [] as Set, order).each { entry ->
             def row = [index: entry.idx, actType: entry.actType, actSubType: entry.actSubType]
-            if (entry.actSubType in boundedTypes) {
-                def descriptions = compiled.actionDescriptions
-                def description = descriptions instanceof Map ? descriptions.get(entry.idx.toString()) : null
-                row.putAll(_rmInventoryText(description, hidden))
-            } else {
+            if (categories.containsKey(entry.actSubType)) {
                 row.status = "withheld"
-                row.category = categories.get(entry.actSubType) ?: "unsupported"
+                row.category = categories.get(entry.actSubType)
+            } else {
+                row.putAll(_rmInventoryActionFields(page.settings, entry.idx, entry.actSubType, variableNames))
             }
             rows << row
         }
@@ -3031,7 +3069,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
-                    projection: [type: "string", enum: ["ruleStructure"], description: "Narrow read-only RM source contract v1: named components, compiled action order, bounded descriptions and non-string local identities. No arbitrary settings or local values. Incompatible with pageName/summary/includeSettings."],
+                    projection: [type: "string", enum: ["ruleStructure"], description: "Narrow read-only RM source contract v2: named components, compiled action order, allowlisted indexed settings evidence and non-string local identities. No arbitrary settings, action text or local values. Incompatible with pageName/summary/includeSettings."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
                 ],

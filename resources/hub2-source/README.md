@@ -480,6 +480,20 @@ reference for interoperability with the published admin HTTP surface. Do not
 redistribute outside this repo or the contexts that already legitimately serve
 them.
 
+## Rule Machine action evidence (2026-09-18)
+
+Values-free owner diagnostics of two installed RM rules show `actions` as a map
+of execution objects, with one object per compiled `actionList` entry. One action
+record has `wait` (null), `quick` (Boolean), `delay` (String), `modes` (object),
+`method` (String), `indent` (String), `rule` (null) and `cond` (Number), with no
+description field. Among examined root maps with numeric keys, neither rule has
+a complete action-indexed string map. Partial key overlap in `capabstrue`,
+`capabsfalse`, `eval`, `firstR` or `parens` does not establish action identity.
+Do not interpret execution records as display strings. The inventory projection
+uses `actionList` for membership/order and narrowly selects indexed configuration
+settings using the existing native writer's field mappings. These observations do
+not prove the meaning of execution-record fields or complete action semantics.
+
 ## Pause/name wire observations (2026-09-07, platform 2.5.1.181)
 
 Throwaway, device-free rules read through server 4.2.2 confirmed that RM's native

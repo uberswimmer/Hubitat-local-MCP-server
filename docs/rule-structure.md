@@ -6,7 +6,7 @@ with `hub_list_rules`. This projection cannot be combined with `pageName`,
 `summary=true` or `includeSettings=true`. It performs no wizard navigation or
 writes and does not execute a rule.
 
-The response identifies `contract: "hubitat.rm.structure"`, `contractVersion: 1`,
+The response identifies `contract: "hubitat.rm.structure"`, `contractVersion: 2`,
 `appId` and `ruleFormat`. Non-RM formats return only that envelope. For RM, it adds:
 
 - `requiredExpression`: available text from the main-page `STPage` href; explicit
@@ -17,13 +17,43 @@ The response identifies `contract: "hubitat.rm.structure"`, `contractVersion: 1`
   Stale settings never establish action membership.
 - `localVariables`: non-string names/types, never values from mutable state.
 
-Descriptions use individual string entries from the compiled `actions` map. This
-shape is feature-detected: an absent map, unknown entry type or missing row yields
-an unavailable description. It never splits the main-page action paragraph or
-visits an action editor to manufacture boundaries. No exact firmware, paragraph
-count or positional layout is required. Consumers must feature-detect the contract.
+Action rows contain selected indexed settings in `fields`. The compiled `actions`
+map contains execution objects on the observed hub, not descriptions. It is not
+used as text, and neither are condition maps with coincidentally matching numeric
+keys. No main-page action paragraph is split and no action editor is visited.
+No exact firmware, paragraph count or positional layout is required.
 
-`status` is `available`, `unavailable` or `withheld` on source fields/rows. Private
+Each selected setting reports one of these shapes:
+
+```json
+{"status": "available", "value": false}
+{"status": "absent"}
+{"status": "withheld"}
+```
+
+`available` means the original value passes the selected field's primitive domain,
+not that the action is understood or complete. Empty strings, null, false and
+missing settings remain distinct. The projection does not infer defaults, invert
+Booleans, resolve variable scope, interpret units or reconstruct expressions.
+Device lists contain only numeric IDs; variable references must resolve to retained
+non-string metadata with local shadowing. Arbitrary strings, nested maps and
+unknown enum values are withheld. A consumer must not interpret absent or withheld
+fields as false, zero or an unconditional command.
+
+The selected families are switch on/off, buttons, lock/unlock, shade position,
+capture/restore, delay/cancellation, repeat timing and structural branch/repeat
+identities. Common delay selector, duration, cancellation, randomness and retained
+variable-reference fields are included. Field names come from the existing native
+RM writer's mappings. Other settings, execution modifiers, expression operands,
+wait configuration and variable assignments are not supplied by this revision.
+The single downstream semantic parser must report those omissions explicitly.
+`getEndRepeat` and `getStopRepeat` remain distinct source subtypes.
+
+Version 2 replaces the unverified version-1 action-description assumption. A v1
+consumer must reject it until updated; accepting the new envelope alone is not a
+valid migration. This change does not establish new parsed inventory coverage.
+
+`status` is `available`, `unavailable` or `withheld` on components/rows. Private
 notification/HTTP/custom/comment/file payloads are withheld and receive a fixed
 category. Other unknown action types are opaque. Fields mentioning String/unknown
 local or global variables are withheld, respecting local-over-global shadowing.
@@ -44,11 +74,16 @@ adjacent to markup. Missing comparisons must not be guessed from runtime truth.
 
 ## Verification status
 
-Synthetic Spock tests cover operators/markup, direct and gateway dispatch, compiled
-order, stale rows, redaction and read failures. The test-hub E2E scenario checks the
-contract envelope/order and omitted data. Live availability of individual compiled
-description strings and named component fields remains pending commissioning.
-The installed production server has not been updated by this change. The existing
-BAT read/configuration scenarios apply; exercise the new projection and verify
-field status on representative rules after installation. Do not run the CI-only
-E2E suite on a personal hub.
+The owner installed v1. Read-only commissioning found 69 available action-order
+lists but no available action descriptions. Values-free diagnostics on two rules
+confirmed execution-object records and no complete action-indexed text map in the
+examined candidates. Version 2 removes that assumption rather than fabricating text.
+
+Synthetic Spock tests use object-shaped execution records and exercise direct and
+gateway dispatch, order, stale rows, typed settings selection, redaction, local
+shadowing, distinct absence/empty/false values and failures. The test-hub E2E
+scenario requires actual duration values in two delay actions separated by a
+redacted comment, so an empty rule can no longer pass the substantive source check.
+The installed owner's hub still needs v2 commissioning and downstream parser
+integration before a fresh inventory can be published. Do not run the CI-only E2E
+suite on a personal hub.

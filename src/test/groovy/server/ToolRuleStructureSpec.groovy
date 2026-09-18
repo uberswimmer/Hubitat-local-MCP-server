@@ -5,7 +5,7 @@ import support.ToolSpecBase
 import spock.lang.Unroll
 
 class ToolRuleStructureSpec extends ToolSpecBase {
-    private void sources(List order = ['7', '2', '8'], Map extra = [:]) {
+    private void sources(List order = ['7', '2', '8'], Map extra = [:], Map settings = [:]) {
         settingsMap.enableRead = true
         script.metaClass.getAllGlobalVars = { -> [HiddenGlobal: [type: 'string', value: 'NEVER_GLOBAL']] }
         def config = [app: [id: 35], configPage: [sections: [[body: [
@@ -15,9 +15,14 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         ]]]], settings: ['actType.7': 'switchActs', 'actSubType.7': 'getOnOffSwitch',
             'actType.2': 'messageActs', 'actSubType.2': 'getMsg',
             'actType.8': 'switchActs', 'actSubType.8': 'getOnOffSwitch',
+            'onOffSwitch.7': ['17'], 'onOff.7': true, 'onOffSwitch.8': ['17'], 'onOff.8': false,
             'actType.999': 'condActs', 'actSubType.999': 'getIfThen', password: 'NEVER_PASSWORD']]
+        config.settings.putAll(settings)
         def compiled = [broken: false, hasPredicate: true, actionList: order,
-                        actions: ['7': 'On: Lamp', '2': 'NEVER_NOTIFICATION\nOff: Lamp', '8': 'Off: Lamp', '999': 'IF stale THEN']]
+                        actions: ['7': [wait: null, quick: false, delay: 'NEVER_DELAY', modes: [:],
+                            method: 'getOnOffSwitch', indent: '', rule: null, cond: 0],
+                            '2': [method: 'getMsg', payload: 'NEVER_NOTIFICATION\nOff: Lamp'],
+                            '8': [method: 'getOnOffSwitch']]]
         compiled.putAll(extra)
         hubGet.register('/installedapp/configure/json/35') { params -> JsonOutput.toJson(config) }
         hubGet.register('/app/ruleBuilderJson/35') { params -> JsonOutput.toJson(compiled) }
@@ -58,11 +63,15 @@ class ToolRuleStructureSpec extends ToolSpecBase {
             script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
         then:
         result.success
-        result.contractVersion == 1
+        result.contractVersion == 2
         result.actions.order == [7, 2, 8]
         result.actions.rows*.index == [7, 2, 8]
         result.actions.rows[1] == [index: 2, actType: 'messageActs', actSubType: 'getMsg', status: 'withheld', category: 'notification']
-        result.actions.rows[0].text == 'On: Lamp'
+        result.actions.rows[0].fields.onOffSwitch == [status: 'available', value: ['17']]
+        result.actions.rows[0].fields.onOff == [status: 'available', value: true]
+        result.actions.rows[0].fields.delayAct == [status: 'absent']
+        result.actions.rows[2].fields.onOff.value == false
+        !result.actions.rows.any { it.containsKey('text') }
         result.requiredExpression.text.contains('<= 20')
         result.localVariables == [[name: 'Flag', type: 'boolean']]
         !JsonOutput.toJson(result).contains('NEVER_')
@@ -91,22 +100,76 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         [] | 'available'
     }
 
-    def "missing individual display map never falls back to whole action paragraph"() {
+    @Unroll
+    def "action text never comes from compiled execution records or a whole paragraph (#actions)"() {
         given:
-        sources(['7'], [actions: null])
-        expect:
-        script.toolGetAppConfig([appId: '35', projection: 'ruleStructure']).actions.rows[0].status == 'unavailable'
-    }
-
-    def "private local reference withholds only its bounded field"() {
-        given:
-        sources(['7','8'], [actions: ['7':'SecretLocal NEVER_VALUE', '8':'Off: Lamp']])
+        sources(['7'], [actions: actions])
         when:
         def result = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
         then:
-        result.actions.rows[0].status == 'withheld'
+        result.actions.rows[0].fields.onOff.value == true
+        !JsonOutput.toJson(result).contains('NEVER_')
         !result.actions.rows[0].containsKey('text')
-        result.actions.rows[1].text == 'Off: Lamp'
+        where:
+        actions << [null, ['7': 'NEVER_GUESSED_TEXT'], ['7': [label: 'NEVER_OBJECT_TEXT']]]
+    }
+
+    def "private variable references and malformed fields are withheld without dropping safe neighbors"() {
+        given:
+        sources(['7','8'], [:], ['xVarD.7': 'SecretLocal', 'onOffSwitch.7': [lockCodes: 'NEVER_CODE'],
+            'onOff.7': 'NEVER_BOOLEAN', 'delaySec.7': 'NEVER_SECONDS',
+            'delayAct.7': 'NEVER_ENUM', 'xVarD.8': 'Flag'])
+        when:
+        def result = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
+        then:
+        ['xVarD', 'onOffSwitch', 'onOff', 'delaySec', 'delayAct'].every {
+            result.actions.rows[0].fields[it] == [status: 'withheld']
+        }
+        result.actions.rows[1].fields.onOff.value == false
+        result.actions.rows[1].fields.xVarD == [status: 'available', value: 'Flag']
+        !JsonOutput.toJson(result).contains('NEVER_')
+        !JsonOutput.toJson(result).contains('SecretLocal')
+    }
+
+    def "source absence empty values and false remain distinct and defaults are not invented"() {
+        given:
+        sources(['7'], [:], ['optSwitch.7': '', 'delayAct.7': null, 'cancelAct.7': false,
+            'delaySec.7': '0.5', 'randomAct.7': 'false'])
+        when:
+        def fields = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure']).actions.rows[0].fields
+        then:
+        fields.optSwitch == [status: 'available', value: '']
+        fields.delayAct == [status: 'available', value: null]
+        fields.cancelAct == [status: 'available', value: false]
+        fields.delaySec == [status: 'available', value: '0.5']
+        fields.randomAct == [status: 'available', value: 'false']
+        fields.delayHor == [status: 'absent']
+    }
+
+    def "lock polarity and separate repeat subtype identities remain source evidence"() {
+        given:
+        sources(['7', '8', '9'], [:], ['actType.7': 'lockActs', 'actSubType.7': 'getLULock',
+            'lockRL.7': true, 'lockLockUnlock.7': ['42'],
+            'actType.8': 'repeatActs', 'actSubType.8': 'getEndRepeat',
+            'actType.9': 'repeatActs', 'actSubType.9': 'getStopRepeat'])
+        when:
+        def rows = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure']).actions.rows
+        then:
+        rows*.actSubType == ['getLULock', 'getEndRepeat', 'getStopRepeat']
+        rows[0].fields.lockRL == [status: 'available', value: true]
+        rows[0].fields.lockLockUnlock == [status: 'available', value: ['42']]
+        !JsonOutput.toJson(rows).contains('command')
+    }
+
+    def "local string shadowing blocks a same-name Boolean global reference"() {
+        given:
+        sources(['7'], [:], ['xVarD.7': 'SecretLocal'])
+        script.metaClass.getAllGlobalVars = { -> [SecretLocal: [type: 'boolean', value: false]] }
+        when:
+        def result = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
+        then:
+        result.actions.rows[0].fields.xVarD == [status: 'withheld']
+        !JsonOutput.toJson(result).contains('SecretLocal')
     }
 
     def "source read failure is a fixed failure not a false empty rule"() {

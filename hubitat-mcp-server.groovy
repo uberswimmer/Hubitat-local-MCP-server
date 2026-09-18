@@ -8414,9 +8414,6 @@ private Map _ruleCompiledState(Integer appId, boolean definitionEvidence = false
                         endpoint: "ruleBuilderJson"]
                 if (definitionEvidence) {
                     result.requirementConfigured = parsed.hasPredicate instanceof Boolean ? parsed.hasPredicate : null
-                    // Individual compiled display strings, never split a rendered multi-action paragraph.
-                    // If firmware changes this shape, the consumer receives unavailable descriptions.
-                    result.actionDescriptions = parsed.actions instanceof Map ? parsed.actions : null
                 }
                 return result
             }
