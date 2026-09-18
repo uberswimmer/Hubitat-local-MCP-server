@@ -74,10 +74,10 @@ adjacent to markup. Missing comparisons must not be guessed from runtime truth.
 
 ## Verification status
 
-The owner installed v1. Read-only commissioning found 69 available action-order
+The owner installed v1. Read-only commissioning found available action-order
 lists but no available action descriptions. Values-free diagnostics on two rules
-confirmed execution-object records and no complete action-indexed text map in the
-examined candidates. Version 2 removes that assumption rather than fabricating text.
+confirmed execution-object records; the other examined maps do not establish an
+action-description source. Version 2 removes the unverified text-map assumption.
 
 Synthetic Spock tests use object-shaped execution records and exercise direct and
 gateway dispatch, order, stale rows, typed settings selection, redaction, local

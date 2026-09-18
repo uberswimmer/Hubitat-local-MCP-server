@@ -486,8 +486,8 @@ Values-free owner diagnostics of two installed RM rules show `actions` as a map
 of execution objects, with one object per compiled `actionList` entry. One action
 record has `wait` (null), `quick` (Boolean), `delay` (String), `modes` (object),
 `method` (String), `indent` (String), `rule` (null) and `cond` (Number), with no
-description field. Among examined root maps with numeric keys, neither rule has
-a complete action-indexed string map. Partial key overlap in `capabstrue`,
+description field. The examined root maps do not establish an action-description
+mapping. Numeric key overlap in `capabstrue`,
 `capabsfalse`, `eval`, `firstR` or `parens` does not establish action identity.
 Do not interpret execution records as display strings. The inventory projection
 uses `actionList` for membership/order and narrowly selects indexed configuration
