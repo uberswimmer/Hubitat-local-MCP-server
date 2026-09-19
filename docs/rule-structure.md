@@ -35,6 +35,11 @@ Each selected setting reports one of these shapes:
 not that the action is understood or complete. Empty strings, null, false and
 missing settings remain distinct. The projection does not infer defaults, invert
 Booleans, resolve variable scope, interpret units or reconstruct expressions.
+Device lists come only from the matching `statusJson.appSettings` record's
+`deviceIdsForDeviceList`, not page-setting sentinels, object values or device labels.
+The status response is shared with local-variable selection, so it is read once.
+Missing records are absent; present records without a valid ID list are withheld.
+Missing/malformed settings scope or duplicate setting identities reject the response.
 Device lists contain only numeric IDs; variable references must resolve to retained
 non-string metadata with local shadowing. Arbitrary strings, nested maps and
 unknown enum values are withheld. A consumer must not interpret absent or withheld
@@ -78,12 +83,18 @@ The owner installed v1. Read-only commissioning found available action-order
 lists but no available action descriptions. Values-free diagnostics on two rules
 confirmed execution-object records; the other examined maps do not establish an
 action-description source. Version 2 removes the unverified text-map assumption.
+The owner then installed v2. The five selected examples returned version 2,
+ordered rows and scalar settings, but every selected device field was withheld.
+The page-only device assumption was incorrect: the existing server's status
+reader documents the separate device-ID field. This revision selects that field
+from the same status read used for locals. Live verification of this repair is pending.
 
 Synthetic Spock tests use object-shaped execution records and exercise direct and
 gateway dispatch, order, stale rows, typed settings selection, redaction, local
 shadowing, distinct absence/empty/false values and failures. The test-hub E2E
 scenario requires actual duration values in two delay actions separated by a
-redacted comment, so an empty rule can no longer pass the substantive source check.
-The installed owner's hub still needs v2 commissioning and downstream parser
+redacted comment, plus the exact device ID of a configured switch action, so an
+empty rule or missing device selection cannot pass the substantive source check.
+The installed owner's hub still needs device-field commissioning and downstream parser
 integration before a fresh inventory can be published. Do not run the CI-only E2E
 suite on a personal hub.

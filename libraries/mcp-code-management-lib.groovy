@@ -349,7 +349,7 @@ private Map _rmInventoryText(value, Set hiddenNames) {
     return [status: "available", text: text]
 }
 
-private Map _rmInventoryActionFields(Map settings, Integer index, String subtype, Set variableNames) {
+private Map _rmInventoryActionFields(Map settings, Map statusSettings, Integer index, String subtype, Set variableNames) {
     // Select source fields only. Defaults, units, polarity, scope and modifiers
     // are interpreted by the inventory's semantic parser, never here.
     def definitions = [
@@ -371,12 +371,16 @@ private Map _rmInventoryActionFields(Map settings, Integer index, String subtype
     ]
     selected.each { field, domain ->
         def key = "${field}.${index}".toString()
-        if (!settings.containsKey(key)) {
+        def source = domain == "devices" ? statusSettings : settings
+        if (!source.containsKey(key)) {
             fields.put(field, [status: "absent"])
             return
         }
-        def value = settings.get(key)
-        boolean valid = value == null || value == ""
+        // Device page values can be sentinels/objects. Only the explicit status ID
+        // list establishes selection; never serialize deviceList labels or value.
+        def record = source.get(key)
+        def value = domain == "devices" ? record?.deviceIdsForDeviceList : record
+        boolean valid = domain != "devices" && (value == null || value == "")
         if (!valid) {
             if (domain instanceof List) valid = value instanceof String && domain.contains(value)
             else if (domain == "boolean") valid = value instanceof Boolean || value in ["true", "false"]
@@ -407,7 +411,16 @@ private Map _rmInventoryStructure(Integer appId) {
         def result = [success: true, contract: "hubitat.rm.structure", contractVersion: 2,
                       appId: appId, ruleFormat: compiled?.ruleFormat ?: "unknown"]
         if (compiled?.ruleFormat != "rm") return result
-        def locals = _rmReadLocalVarsMap(appId, true)
+        def status = _rmFetchStatusJson(appId)
+        if (!(status?.appSettings instanceof List) || status.appSettings.any {
+            !(it instanceof Map) || !(it.name instanceof String) || !it.name
+        }) return [success: false, error: "ruleStructure settings scope unavailable"]
+        def statusSettings = [:]
+        for (record in status.appSettings) {
+            if (statusSettings.containsKey(record.name)) return [success: false, error: "ruleStructure duplicate setting identity"]
+            statusSettings.put(record.name, record)
+        }
+        def locals = _rmReadLocalVarsMap(appId, true, status)
         if (locals.ok != true) return [success: false, error: "ruleStructure local scope read failed"]
         def safeTypes = ["boolean", "number", "integer", "decimal", "time", "date", "datetime"]
         def hidden = [] as Set
@@ -464,7 +477,7 @@ private Map _rmInventoryStructure(Integer appId) {
                 row.status = "withheld"
                 row.category = categories.get(entry.actSubType)
             } else {
-                row.putAll(_rmInventoryActionFields(page.settings, entry.idx, entry.actSubType, variableNames))
+                row.putAll(_rmInventoryActionFields(page.settings, statusSettings, entry.idx, entry.actSubType, variableNames))
             }
             rows << row
         }

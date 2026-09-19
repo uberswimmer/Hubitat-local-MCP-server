@@ -494,6 +494,15 @@ uses `actionList` for membership/order and narrowly selects indexed configuratio
 settings using the existing native writer's field mappings. These observations do
 not prove the meaning of execution-record fields or complete action semantics.
 
+Installed v2 commissioning found scalar indexed settings but withheld device
+selections. Page settings are not a plain device-ID list contract. The existing
+`_rmLiveSettingsFromStatus` and native write-verification code document
+`statusJson.appSettings[].deviceIdsForDeviceList` as the explicit selected IDs,
+separate from `value` and the label-bearing `deviceList` map. The inventory
+projection reads only that ID list for allowlisted action device fields and
+shares the status response with local-scope selection. It does not infer IDs from
+labels or accept a page sentinel as an empty selection.
+
 ## Pause/name wire observations (2026-09-07, platform 2.5.1.181)
 
 Throwaway, device-free rules read through server 4.2.2 confirmed that RM's native

@@ -10381,10 +10381,11 @@ def _createNativeAppShell(args) {
 // A non-List appState (a shape RM is not expected to emit) is treated as
 // "no locals" but logged as a shape mismatch so a silent zero-locals read of a
 // changed contract is visible rather than mistaken for a genuinely empty rule.
-private Map _rmReadLocalVarsMap(Integer appId, boolean requireScopeShape = false) {
+private Map _rmReadLocalVarsMap(Integer appId, boolean requireScopeShape = false, Map sourceStatus = null) {
     def status
     try {
-        status = _rmFetchStatusJson(appId)
+        // Callers already reading status can share that observation without a second GET.
+        status = sourceStatus != null ? sourceStatus : _rmFetchStatusJson(appId)
     } catch (Exception e) {
         return [ok: false, vars: [:], error: "${e.class.simpleName}: ${e.message ?: e.toString()}"]
     }

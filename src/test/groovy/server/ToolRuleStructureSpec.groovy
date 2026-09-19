@@ -5,7 +5,7 @@ import support.ToolSpecBase
 import spock.lang.Unroll
 
 class ToolRuleStructureSpec extends ToolSpecBase {
-    private void sources(List order = ['7', '2', '8'], Map extra = [:], Map settings = [:]) {
+    private void sources(List order = ['7', '2', '8'], Map extra = [:], Map settings = [:], List deviceSettings = null) {
         settingsMap.enableRead = true
         script.metaClass.getAllGlobalVars = { -> [HiddenGlobal: [type: 'string', value: 'NEVER_GLOBAL']] }
         def config = [app: [id: 35], configPage: [sections: [[body: [
@@ -15,7 +15,8 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         ]]]], settings: ['actType.7': 'switchActs', 'actSubType.7': 'getOnOffSwitch',
             'actType.2': 'messageActs', 'actSubType.2': 'getMsg',
             'actType.8': 'switchActs', 'actSubType.8': 'getOnOffSwitch',
-            'onOffSwitch.7': ['17'], 'onOff.7': true, 'onOffSwitch.8': ['17'], 'onOff.8': false,
+            'onOffSwitch.7': [sentinel: 'NEVER_PAGE_DEVICE'], 'onOff.7': true,
+            'onOffSwitch.8': true, 'onOff.8': false,
             'actType.999': 'condActs', 'actSubType.999': 'getIfThen', password: 'NEVER_PASSWORD']]
         config.settings.putAll(settings)
         def compiled = [broken: false, hasPredicate: true, actionList: order,
@@ -26,9 +27,14 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         compiled.putAll(extra)
         hubGet.register('/installedapp/configure/json/35') { params -> JsonOutput.toJson(config) }
         hubGet.register('/app/ruleBuilderJson/35') { params -> JsonOutput.toJson(compiled) }
-        hubGet.register('/installedapp/statusJson/35') { params -> JsonOutput.toJson([appState: [[name: 'allLocalVars', value: [
+        def status = [appSettings: deviceSettings != null ? deviceSettings : [
+            [name: 'onOffSwitch.7', value: null, deviceIdsForDeviceList: ['17'], deviceList: ['17': 'NEVER_DEVICE_LABEL']],
+            [name: 'onOffSwitch.8', value: null, deviceIdsForDeviceList: ['17']],
+            [name: 'lockLockUnlock.7', value: null, deviceIdsForDeviceList: ['42']]
+        ], appState: [[name: 'allLocalVars', value: [
             Flag: [type: 'boolean', value: true], SecretLocal: [type: 'string', value: 'NEVER_LOCAL'],
-            ServicePassword: [type: 'integer', value: 9876]]]]]) }
+            ServicePassword: [type: 'integer', value: 9876]]]]]
+        hubGet.register('/installedapp/statusJson/35') { params -> JsonOutput.toJson(status) }
     }
 
     @Unroll
@@ -78,6 +84,8 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('SecretLocal')
         !JsonOutput.toJson(result).contains('ServicePassword')
         !result.containsKey('settings')
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+        hubGet.calls.size() == 3
         where:
         dispatch << [false, true]
     }
@@ -118,7 +126,8 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         given:
         sources(['7','8'], [:], ['xVarD.7': 'SecretLocal', 'onOffSwitch.7': [lockCodes: 'NEVER_CODE'],
             'onOff.7': 'NEVER_BOOLEAN', 'delaySec.7': 'NEVER_SECONDS',
-            'delayAct.7': 'NEVER_ENUM', 'xVarD.8': 'Flag'])
+            'delayAct.7': 'NEVER_ENUM', 'xVarD.8': 'Flag'],
+            [[name: 'onOffSwitch.7', deviceIdsForDeviceList: [[lockCodes: 'NEVER_CODE']]]])
         when:
         def result = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
         then:
@@ -172,6 +181,54 @@ class ToolRuleStructureSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('SecretLocal')
     }
 
+    @Unroll
+    def "device selections use only the explicit status ID list (#ids)"() {
+        given:
+        sources(['7'], [:], ['onOffSwitch.7': ['999']],
+            [[name: 'onOffSwitch.7', value: ['888'], deviceIdsForDeviceList: ids,
+              deviceList: ['777': 'NEVER_LABEL'], lockCodes: 'NEVER_CODE']])
+        when:
+        def result = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
+        then:
+        result.success
+        result.actions.rows[0].fields.onOffSwitch == expected
+        !JsonOutput.toJson(result).contains('NEVER_')
+        where:
+        ids | expected
+        ['17', 18] | [status: 'available', value: ['17', 18]]
+        [] | [status: 'available', value: []]
+        null | [status: 'withheld']
+        '17' | [status: 'withheld']
+        [true] | [status: 'withheld']
+        ['17', 'NEVER_ID'] | [status: 'withheld']
+        [[id: '17', label: 'NEVER_LABEL']] | [status: 'withheld']
+        (['17'] * 129) | [status: 'withheld']
+    }
+
+    def "missing device status record is absent, not a page fallback"() {
+        given:
+        sources(['7'], [:], ['onOffSwitch.7': ['999']], [])
+        when:
+        def result = script.toolGetAppConfig([appId: '35', projection: 'ruleStructure'])
+        then:
+        result.success
+        result.actions.rows[0].fields.onOffSwitch == [status: 'absent']
+    }
+
+    @Unroll
+    def "missing malformed and duplicate settings scope reject the projection (#records)"() {
+        given:
+        sources()
+        hubGet.register('/installedapp/statusJson/35') { params ->
+            JsonOutput.toJson([appSettings: records, appState: []])
+        }
+        expect:
+        !script.toolGetAppConfig([appId: '35', projection: 'ruleStructure']).success
+        where:
+        records << [null, [:], [null], [[name: 7]], [[name: '']],
+                    [[name: 'onOffSwitch.7'], [name: 'onOffSwitch.7']]]
+    }
+
     def "source read failure is a fixed failure not a false empty rule"() {
         given:
         sources()
@@ -187,7 +244,7 @@ class ToolRuleStructureSpec extends ToolSpecBase {
     def "unknown local scope fails closed (#state)"() {
         given:
         sources()
-        hubGet.register('/installedapp/statusJson/35') { params -> JsonOutput.toJson([appState: state]) }
+        hubGet.register('/installedapp/statusJson/35') { params -> JsonOutput.toJson([appSettings: [], appState: state]) }
         expect:
         !script.toolGetAppConfig([appId: '35', projection: 'ruleStructure']).success
         where:
