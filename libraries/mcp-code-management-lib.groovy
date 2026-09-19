@@ -267,21 +267,19 @@ def toolGetItemSource(String type, String idParam, args) {
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
-    // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
-    // Hubitat embeds via <style>/<script>: the tags strip above but the
-    // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
-    // Local Variables `lvTable` page). Only blocks containing ; or : inside the
-    // braces are removed, so prose like "{x}" is preserved.
-    if (s.contains("<")) {
-        s = s.replaceAll(/<[^>]+>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
-    }
-    // Decode the common HTML entities Hubitat escapes user-typed names with: a
-    // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
-    // Decode &amp; LAST so a single-encoded "&lt;" resolves correctly.
-    if (s.contains("&")) {
-        s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
-             .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
-             .replace("&amp;", "&")
+    // A comparison '< 20' is text, not a tag. Match actual tag syntax, including
+    // quoted attributes, without consuming the following comparison or markup.
+    // Remove script/style CONTENT before tags; never erase arbitrary {prose}.
+    s = s.replaceAll(/(?is)<(script|style)\b[^>]*>.*?(?:<\/\1\s*>|$)/, "")
+         .replaceAll(/(?s)<!--.*?(?:-->|$)/, "")
+         .replaceAll(/(?i)<br\s*\/?>/, "\n")
+         .replaceAll(/(?i)<\/?[a-z][a-z0-9:-]*(?:\s+[a-z_:][a-z0-9_.:-]*(?:\s*=\s*(?:"[^"<]*"|'[^'<]*'|[^\s<>`='"]+))?)*\s*\/?>/, "")
+    // Decode once, AFTER removing markup. Encoded tags are literal text.
+    def entities = [lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", amp: "&",
+                    "#60": "<", "#62": ">", "#34": '"', "#39": "'", "#160": " ", "#38": "&",
+                    "#x3c": "<", "#x3e": ">", "#x22": '"', "#x27": "'", "#xa0": " ", "#x26": "&"]
+    s = s.replaceAll(/&([a-z]+|#[0-9]+|#x[0-9a-fA-F]+);/) { whole, key ->
+        entities.get(key.toLowerCase()) ?: whole
     }
     return s.trim()
 }
@@ -326,7 +324,7 @@ private List _extractEmbeddedActions(String html) {
         if (tm.find()) title = tm.group(1)
         def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
         if (sm.find()) state = sm.group(1)
-        def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
+        def inner = stripAppConfigHtml(innerRaw)
         divs << [title: title, stateAttribute: state, description: inner ?: null]
     }
     if (!buttonNames || !divs) return []
@@ -343,6 +341,153 @@ private List _extractEmbeddedActions(String html) {
     return actions
 }
 
+private Map _rmInventoryText(value, Set hiddenNames) {
+    // A bounded source FIELD, never a newline-derived action boundary.
+    if (!(value instanceof String) || value.size() > 100000) return [status: "unavailable"]
+    def text = stripAppConfigHtml(value)
+    if (hiddenNames.any { text.toLowerCase().contains(it.toString().toLowerCase()) }) return [status: "withheld"]
+    return [status: "available", text: text]
+}
+
+private Map _rmInventoryActionFields(Map settings, Map statusSettings, Integer index, String subtype, Set variableNames) {
+    // Select source fields only. Defaults, units, polarity, scope and modifiers
+    // are interpreted by the inventory's semantic parser, never here.
+    def definitions = [
+        getOnOffSwitch: [onOffSwitch: "devices", onOff: "boolean", optSwitch: "boolean"],
+        getPushButton: [pushButton: "devices", pushButNo: "number", pushButOp: ["push", "hold", "doubleTap", "release"], varButNo: "boolean"],
+        getLULock: [lockLockUnlock: "devices", lockRL: "boolean"],
+        getShadePosition: [shadePosition: "devices", shadeLevel: "number"],
+        getCapture: [capture: "devices"], getRestore: [:], getCancelDelay: [:],
+        getDelay: [delayHour: "number", delayMinute: "number", delaySecond: "number", uVar: "boolean", xVar: "variable"],
+        getRepeat: [repeatHour: "number", repeatMinute: "number", repeatSecond: "number", repeatN: "number", stopRepeat: "boolean", uVar: "boolean", uVar2: "boolean"],
+        getWhile: [repeatHour: "number", repeatMinute: "number", repeatSecond: "number", repeatN: "number", stopRepeat: "boolean", uVar: "boolean", uVar2: "boolean"],
+        getIfThen: [:], getElseIf: [:], getElse: [:], getEndIf: [:], getEndRepeat: [:], getStopRepeat: [:]
+    ]
+    if (!definitions.containsKey(subtype)) return [status: "unavailable"]
+    def fields = [:]
+    def selected = [:] + definitions.get(subtype) + [
+        delayAct: ["none", "hrs:min:sec", "variable"], delayHor: "number", delayMin: "number", delaySec: "number",
+        randomAct: "boolean", cancelAct: "boolean", xVarD: "variable"
+    ]
+    selected.each { field, domain ->
+        def key = "${field}.${index}".toString()
+        def source = domain == "devices" ? statusSettings : settings
+        if (!source.containsKey(key)) {
+            fields.put(field, [status: "absent"])
+            return
+        }
+        // Device page values can be sentinels/objects. Only the explicit status ID
+        // list establishes selection; never serialize deviceList labels or value.
+        def record = source.get(key)
+        def value = domain == "devices" ? record?.deviceIdsForDeviceList : record
+        boolean valid = domain != "devices" && (value == null || value == "")
+        if (!valid) {
+            if (domain instanceof List) valid = value instanceof String && domain.contains(value)
+            else if (domain == "boolean") valid = value instanceof Boolean || value in ["true", "false"]
+            else if (domain == "number") valid = (value instanceof Number || value instanceof String) &&
+                value.toString() ==~ /-?(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,6})?/
+            else if (domain == "devices") valid = value instanceof List && value.size() <= 128 && value.every {
+                (it instanceof Number || it instanceof String) && it.toString() ==~ /[1-9][0-9]{0,9}/
+            }
+            else if (domain == "variable") valid = value instanceof String && variableNames.contains(value)
+        }
+        fields.put(field, valid ? [status: "available", value: value] : [status: "withheld"])
+    }
+    return [status: "available", fields: fields]
+}
+
+private Map _rmInventoryStructure(Integer appId) {
+    // Only the main page and existing compiled/status readers; no editor subpages.
+    // Do not return/log raw response text, exceptions, arbitrary settings or state.
+    try {
+        def raw = hubInternalGet("/installedapp/configure/json/${appId}", null, 30)
+        def page = new groovy.json.JsonSlurper().parseText(raw)
+        if (!(page instanceof Map) || !(page.app instanceof Map) || page.app.id?.toString() != appId.toString() ||
+            !(page.configPage?.sections instanceof List) || !(page.settings instanceof Map)) {
+            return [success: false, error: "ruleStructure source contract unavailable"]
+        }
+        def compiled = _ruleCompiledState(appId, true)
+        if (compiled?.readError) return [success: false, error: "ruleStructure compiled read failed"]
+        def result = [success: true, contract: "hubitat.rm.structure", contractVersion: 2,
+                      appId: appId, ruleFormat: compiled?.ruleFormat ?: "unknown"]
+        if (compiled?.ruleFormat != "rm") return result
+        def status = _rmFetchStatusJson(appId)
+        if (!(status?.appSettings instanceof List) || status.appSettings.any {
+            !(it instanceof Map) || !(it.name instanceof String) || !it.name
+        }) return [success: false, error: "ruleStructure settings scope unavailable"]
+        def statusSettings = [:]
+        for (record in status.appSettings) {
+            if (statusSettings.containsKey(record.name)) return [success: false, error: "ruleStructure duplicate setting identity"]
+            statusSettings.put(record.name, record)
+        }
+        def locals = _rmReadLocalVarsMap(appId, true, status)
+        if (locals.ok != true) return [success: false, error: "ruleStructure local scope read failed"]
+        def safeTypes = ["boolean", "number", "integer", "decimal", "time", "date", "datetime"]
+        def hidden = [] as Set
+        def privateName = { name -> name.toString().replaceAll(/[^a-zA-Z0-9]/, "").toLowerCase() =~ /password|passwd|credential|secret|token|pincode|lockcode/ }
+        def safeLocals = []
+        locals.vars.each { name, variable ->
+            def type = variable instanceof Map ? variable.type?.toString()?.toLowerCase() : null
+            if (!(type in safeTypes) || privateName(name).find()) {
+                hidden.add(name.toString())
+            } else {
+                safeLocals << [name: name.toString(), type: type]
+            }
+        }
+        // Suppress String/unknown globals in displayed fields too. Locals shadow globals.
+        def globals = getAllGlobalVars()
+        if (!(globals instanceof Map)) return [success: false, error: "ruleStructure global scope read failed"]
+        globals.each { name, variable ->
+            if (privateName(name).find() || (!locals.vars.containsKey(name) && !(variable?.type?.toString()?.toLowerCase() in safeTypes))) hidden.add(name.toString())
+        }
+        def variableNames = (safeLocals.collect { it.name } + globals.keySet().findAll {
+            !locals.vars.containsKey(it) && !hidden.contains(it.toString())
+        }.collect { it.toString() }) as Set
+        result.localVariables = safeLocals.sort { it.name }
+        def bodies = page.configPage.sections.collectMany { section ->
+            (section instanceof Map && section.body instanceof List) ? section.body : []
+        }
+        def named = { target ->
+            def matches = bodies.findAll { it instanceof Map && it.element == "href" && it.page == target }
+            matches.size() == 1 ? _rmInventoryText(matches[0].description, hidden) : [status: "unavailable"]
+        }
+        result.requiredExpression = compiled.requirementConfigured == false ? [status: "not_configured"] :
+            compiled.requirementConfigured == true ? named("STPage") : [status: "unavailable"]
+        result.triggers = named("selectTriggers")
+        def order = _rmOrderedActionIndices(appId, compiled)
+        if (order == null || order.size() > 500 || order.any { it < 1 } || order.toSet().size() != order.size()) {
+            result.actions = [status: "unavailable", reason: "compiled_order_unavailable"]
+            return result
+        }
+        def categories = [getMsg: "notification", getHTTPGet: "http", getHTTPPost: "http",
+            getDefinedAction: "custom", getComment: "comment", getLogMsg: "private_text",
+            getWriteLocalFile: "private_text", getAppendLocalFile: "private_text", getDeleteLocalFile: "private_text"]
+        def settingRows = [:]
+        order.each { idx ->
+            ["actType", "actSubType"].each { prefix ->
+                def key = "${prefix}.${idx}".toString()
+                def value = page.settings[key]
+                if (value instanceof String && value ==~ /[A-Za-z][A-Za-z0-9]{0,63}/) settingRows.put(key, [value: value])
+            }
+        }
+        def rows = []
+        _rmStructuralSequenceFromSettings(settingRows, [] as Set, order).each { entry ->
+            def row = [index: entry.idx, actType: entry.actType, actSubType: entry.actSubType]
+            if (categories.containsKey(entry.actSubType)) {
+                row.status = "withheld"
+                row.category = categories.get(entry.actSubType)
+            } else {
+                row.putAll(_rmInventoryActionFields(page.settings, statusSettings, entry.idx, entry.actSubType, variableNames))
+            }
+            rows << row
+        }
+        result.actions = [status: "available", order: order, rows: rows]
+        return result
+    } catch (Exception ignored) {
+        return [success: false, error: "ruleStructure read failed"]
+    }
+}
+
 def toolGetAppConfig(args) {
 
     if (args?.appId == null || args.appId.toString().trim() == "") {
@@ -351,6 +496,13 @@ def toolGetAppConfig(args) {
     def appIdStr = args.appId.toString().trim()
     if (!appIdStr.isInteger()) {
         throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
+    }
+
+    if (args?.projection != null) {
+        if (args.projection != "ruleStructure" || args.pageName || args.summary == true || args.includeSettings == true) {
+            throw new IllegalArgumentException("ruleStructure projection cannot be combined with pageName, summary or includeSettings")
+        }
+        return _rmInventoryStructure(appIdStr as Integer)
     }
 
     def pageName = args?.pageName?.toString()?.trim()
@@ -2930,6 +3082,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
+                    projection: [type: "string", enum: ["ruleStructure"], description: "Narrow read-only RM source contract v2: named components, compiled action order, allowlisted indexed settings evidence and non-string local identities. No arbitrary settings, action text or local values. Incompatible with pageName/summary/includeSettings."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
                 ],

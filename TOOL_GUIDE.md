@@ -632,6 +632,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - **Location-scope mode**: omit `deviceId` to return location events instead of device events. Returns mode changes (`name: 'mode'`), HSM status/alerts (`'hsmStatus'`, `'hsmAlert'`), hub variable changes (name = the variable's name), and any `sendLocationEvent(...)` emissions from rules/apps. `attribute` filter applies to event name in the same way. Response includes `source: 'location'` and omits `device`/`deviceId`.
 
 **hub_get_app_config:**
+- projection="ruleStructure" selects the read-only `hubitat.rm.structure` v2 contract: named required expression/triggers, compiled actionList order, allowlisted indexed setting fields and non-string local metadata. Each selected field reports available, absent or withheld; values are source evidence, not normalized actions. Compiled action objects are not description strings. It rejects pageName/summary/includeSettings combinations; no arbitrary settings or local values are returned. Missing source fields are explicit gaps. See docs/rule-structure.md.
 - Reads any legacy SmartApp's configuration page: RM rules, Room Lighting instances, Basic Rules, HPM, Mode Manager, Button Controllers, third-party community apps
 - Default response includes `app` (identity), `page` (section/input structure with current values), `childApps` summary
 - Raw app-internal `settings` map (~100-1000 keys with app-specific encoding) omitted by default — pass `includeSettings=true` for power-user inspection

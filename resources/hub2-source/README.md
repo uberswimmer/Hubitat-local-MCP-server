@@ -480,6 +480,29 @@ reference for interoperability with the published admin HTTP surface. Do not
 redistribute outside this repo or the contexts that already legitimately serve
 them.
 
+## Rule Machine action evidence (2026-09-18)
+
+Values-free owner diagnostics of two installed RM rules show `actions` as a map
+of execution objects, with one object per compiled `actionList` entry. One action
+record has `wait` (null), `quick` (Boolean), `delay` (String), `modes` (object),
+`method` (String), `indent` (String), `rule` (null) and `cond` (Number), with no
+description field. The examined root maps do not establish an action-description
+mapping. Numeric key overlap in `capabstrue`,
+`capabsfalse`, `eval`, `firstR` or `parens` does not establish action identity.
+Do not interpret execution records as display strings. The inventory projection
+uses `actionList` for membership/order and narrowly selects indexed configuration
+settings using the existing native writer's field mappings. These observations do
+not prove the meaning of execution-record fields or complete action semantics.
+
+Installed v2 commissioning found scalar indexed settings but withheld device
+selections. Page settings are not a plain device-ID list contract. The existing
+`_rmLiveSettingsFromStatus` and native write-verification code document
+`statusJson.appSettings[].deviceIdsForDeviceList` as the explicit selected IDs,
+separate from `value` and the label-bearing `deviceList` map. The inventory
+projection reads only that ID list for allowlisted action device fields and
+shares the status response with local-scope selection. It does not infer IDs from
+labels or accept a page sentinel as an empty selection.
+
 ## Pause/name wire observations (2026-09-07, platform 2.5.1.181)
 
 Throwaway, device-free rules read through server 4.2.2 confirmed that RM's native
