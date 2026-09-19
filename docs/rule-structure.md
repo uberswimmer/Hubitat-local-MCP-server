@@ -87,7 +87,10 @@ The owner then installed v2. The five selected examples returned version 2,
 ordered rows and scalar settings, but every selected device field was withheld.
 The page-only device assumption was incorrect: the existing server's status
 reader documents the separate device-ID field. This revision selects that field
-from the same status read used for locals. Live verification of this repair is pending.
+from the same status read used for locals. The owner installed the repaired
+libraries and recompiled the existing main app. Read-only verification across
+five representative rules now confirms all 27 selected device fields across
+120 ordered rows. No further installation is required for this repair.
 
 Synthetic Spock tests use object-shaped execution records and exercise direct and
 gateway dispatch, order, stale rows, typed settings selection, redaction, local
@@ -95,6 +98,8 @@ shadowing, distinct absence/empty/false values and failures. The test-hub E2E
 scenario requires actual duration values in two delay actions separated by a
 redacted comment, plus the exact device ID of a configured switch action, so an
 empty rule or missing device selection cannot pass the substantive source check.
-The installed owner's hub still needs device-field commissioning and downstream parser
-integration before a fresh inventory can be published. Do not run the CI-only E2E
-suite on a personal hub.
+The CI-only test-hub E2E run remains pending. Device-field commissioning does not
+establish complete reconstructed rule semantics: the downstream parser must
+interpret the bounded fields, preserve explicit gaps and independently validate
+the complete inventory before publication. Do not run the CI-only E2E suite on a
+personal hub.
